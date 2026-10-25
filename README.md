@@ -40,7 +40,7 @@ Gửi `/start` và chọn **Pokedex**, rồi gửi tên Pokémon. Có thể tìm
 
 Nếu không tìm thấy tên, bot sẽ gợi ý tối đa ba Pokémon có tên gần giống.
 
-## Ưeather
+## Weather
 
 Gửi `/start` và chọn **Thời tiết**, rồi gửi tên thành phố. Hoặc tra cứu trực tiếp:
 
