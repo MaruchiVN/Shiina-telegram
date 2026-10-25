@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "start": "node index.js"
   },
   "keywords": [],
@@ -14,6 +14,7 @@
   "dependencies": {
     "dotenv": "^18.0.8",
     "fastest-levenshtein": "^1.0.16",
+    "lazy-downloader": "^1.0.1",
     "telegraf": "^4.16.3"
   }
 }

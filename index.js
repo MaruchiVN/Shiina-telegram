@@ -1,28 +1,43 @@
 require("dotenv").config();
 const { distance } = require("fastest-levenshtein");
 const { Telegraf } = require("telegraf");
+const { extractTikTokUrl, sendTikTok } = require("./tiktok");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+const startedAt = Math.floor(Date.now() / 1000);
+const menuReminders = new Map();
+
+bot.use(async (ctx, next) => {
+  if (ctx.from?.is_bot) return;
+  // Do not answer a backlog of messages sent before this process started.
+  if (ctx.message?.date && ctx.message.date < startedAt - 30) return;
+  return next();
+});
 
 const weatherUsers = new Set();
 const pokedexUsers = new Set();
+const tiktokUsers = new Set();
 
 bot.start(async (ctx) => {
+  menuReminders.set(`${ctx.chat.id}:${ctx.from.id}`, Date.now());
   
   weatherUsers.delete(ctx.from.id);
   pokedexUsers.delete(ctx.from.id);
+  tiktokUsers.delete(ctx.from.id);
 
   await ctx.reply("Chào cậu, tớ là Shiina! Cậu muốn dùng chức năng nào?", {
     reply_markup: {
       inline_keyboard: [
         [{ text: "🌤 Thời tiết", callback_data: "weather" }],
         [{ text: "📖 Pokédex", callback_data: "pokedex" }],
+        [{ text: "🎬 TikTok không logo", callback_data: "tiktok" }],
       ],
     },
   });
 });
 
 bot.action("weather", async (ctx) => {
+  tiktokUsers.delete(ctx.from.id);
   pokedexUsers.delete(ctx.from.id);
   weatherUsers.add(ctx.from.id);
 
@@ -30,14 +45,55 @@ bot.action("weather", async (ctx) => {
   await ctx.reply("🌤 Đã chọn Thời tiết. Cậu gửi tên thành phố nhé.");
 });
 
+bot.command("weather", async (ctx) => {
+  tiktokUsers.delete(ctx.from.id);
+  pokedexUsers.delete(ctx.from.id);
+  weatherUsers.add(ctx.from.id);
+
+  const city = ctx.message.text.replace(/^\/weather(?:@\w+)?\b/i, "").trim();
+  if (!city) {
+    return ctx.reply("🌤 Đã chọn Thời tiết. Cậu gửi tên thành phố nhé, ví dụ: /weather Hà Nội.");
+  }
+  return lookupWeather(ctx, city);
+});
+
 bot.action("pokedex", async (ctx) => {
+  tiktokUsers.delete(ctx.from.id);
   weatherUsers.delete(ctx.from.id);
   pokedexUsers.add(ctx.from.id);
 
   await ctx.answerCbQuery();
   await ctx.reply("📖 Đã chọn Pokédex. Cậu gửi tên Pokémon nhé.");
 });
+
+bot.command("pokedex", async (ctx) => {
+  tiktokUsers.delete(ctx.from.id);
+  weatherUsers.delete(ctx.from.id);
+  pokedexUsers.add(ctx.from.id);
+
+  const name = ctx.message.text.replace(/^\/pokedex(?:@\w+)?\b/i, "").trim();
+  if (!name) {
+    return ctx.reply("📖 Đã chọn Pokédex. Cậu gửi tên Pokémon nhé, ví dụ: /pokedex pikachu.");
+  }
+  return lookupPokemon(ctx, name);
+});
   
+bot.action("tiktok", async (ctx) => {
+  weatherUsers.delete(ctx.from.id);
+  pokedexUsers.delete(ctx.from.id);
+  tiktokUsers.add(ctx.from.id);
+  await ctx.answerCbQuery();
+  await ctx.reply("🎬 Cậu gửi link video TikTok công khai nhé (hỗ trợ cả link rút gọn vm.tiktok.com và vt.tiktok.com).");
+});
+
+bot.command("tiktok", async (ctx) => {
+  weatherUsers.delete(ctx.from.id);
+  pokedexUsers.delete(ctx.from.id);
+  tiktokUsers.add(ctx.from.id);
+  const url = extractTikTokUrl(ctx.message.text);
+  return url ? sendTikTok(ctx, url) : ctx.reply("Cậu gửi link video TikTok công khai nhé.");
+});
+
 bot.action(/^pokemon:(.+)$/, async (ctx) => {
   const name = ctx.match[1];
 
@@ -76,10 +132,58 @@ bot.action(/^pokemon:(.+)$/, async (ctx) => {
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   const text = ctx.message.text.trim();
+  if (tiktokUsers.has(userId)) {
+    const tiktokUrl = extractTikTokUrl(text);
+    if (tiktokUrl) return sendTikTok(ctx, tiktokUrl);
+    return ctx.reply("Cậu gửi link https://www.tiktok.com/… hoặc link rút gọn TikTok hợp lệ nhé.");
+  }
 
   
   if (pokedexUsers.has(userId)) {
-  const name = text.toLowerCase();
+  return lookupPokemon(ctx, text);
+}
+
+  if (weatherUsers.has(userId)) {
+    return lookupWeather(ctx, text);
+  }
+
+  if (ctx.chat.type !== "private" || text.startsWith("/")) return;
+  const reminderKey = `${ctx.chat.id}:${userId}`;
+  const now = Date.now();
+  if (now - (menuReminders.get(reminderKey) || 0) < 60_000) return;
+  if (menuReminders.size >= 5000) menuReminders.clear();
+  menuReminders.set(reminderKey, now);
+  return ctx.reply("Cậu hãy gửi /start rồi chọn Thời tiết, Pokédex hoặc TikTok nhé.");
+});
+
+async function lookupWeather(ctx, city) {
+    if (!process.env.OPENWEATHER_API_KEY) {
+      return ctx.reply("Chưa cài OPENWEATHER_API_KEY trong file .env.");
+    }
+
+    const url =
+      `https://api.openweathermap.org/data/2.5/weather` +
+      `?q=${encodeURIComponent(city)}` +
+      `&appid=${process.env.OPENWEATHER_API_KEY}` +
+      `&units=metric` +
+      `&lang=vi`;
+
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      return ctx.reply("Không tìm thấy thành phố đó. Cậu kiểm tra lại tên nhé.");
+    }
+
+    const data = await response.json();
+
+    return ctx.reply(
+      `Thời tiết ở ${data.name}: ${data.main.temp}°C, ` +
+      `${data.weather[0].description}`
+    );
+}
+
+async function lookupPokemon(ctx, query) {
+  const name = query.trim().toLowerCase();
 
   // check tên
   const response = await fetch(
@@ -106,7 +210,6 @@ bot.on("text", async (ctx) => {
     return ctx.reply(caption);
   }
 
-  // sai tên
   const listResponse = await fetch(
     "https://pokeapi.co/api/v2/pokemon?limit=2000"
   );
@@ -126,10 +229,10 @@ bot.on("text", async (ctx) => {
     .slice(0, 3);
 
   if (suggestions.length === 0) {
-  return ctx.reply("Không tìm thấy tên gần giống. Anh nhập lại tên nhé.");
+  return ctx.reply("Không tìm thấy tên gần giống. Cậu nhập lại tên nhé.");
 }
 
-return ctx.reply("Ý anh là Pokémon nào ạ?", {
+return ctx.reply("Ý cậu là Pokémon nào ạ?", {
   reply_markup: {
     inline_keyboard: suggestions.map((pokemon) => [
       {
@@ -140,35 +243,6 @@ return ctx.reply("Ý anh là Pokémon nào ạ?", {
   },
 });
 }
-
-  if (weatherUsers.has(userId)) {
-    if (!process.env.OPENWEATHER_API_KEY) {
-      return ctx.reply("Chưa cài OPENWEATHER_API_KEY trong file .env.");
-    }
-
-    const url =
-      `https://api.openweathermap.org/data/2.5/weather` +
-      `?q=${encodeURIComponent(text)}` +
-      `&appid=${process.env.OPENWEATHER_API_KEY}` +
-      `&units=metric` +
-      `&lang=vi`;
-
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      return ctx.reply("Không tìm thấy thành phố đó. Cậu kiểm tra lại tên nhé.");
-    }
-
-    const data = await response.json();
-
-    return ctx.reply(
-      `Thời tiết ở ${data.name}: ${data.main.temp}°C, ` +
-      `${data.weather[0].description}`
-    );
-  }
-
-  return ctx.reply("Cậu hãy gửi /start rồi chọn Thời tiết hoặc Pokédex nhé.");
-});
 
 bot.catch((err, ctx) => {
   console.error(`Lỗi khi xử lý cập nhật ${ctx.update.update_id}:`, err);
